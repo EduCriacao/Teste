@@ -69,4 +69,3 @@ jobs:
             Remove-Item $env:STAGE_DIR -Recurse -Force -ErrorAction SilentlyContinue
             Write-Host "Stage limpo"
           }
-          }
