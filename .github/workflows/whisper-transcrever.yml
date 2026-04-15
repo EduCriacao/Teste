@@ -1,0 +1,70 @@
+name: Whisper Transcrever
+
+on:
+  workflow_dispatch:
+    inputs:
+      audio_path:
+        description: "Caminho absoluto do .wav (G:\\...)"
+        required: true
+        default: "G:\\Meu Drive\\Consultorias\\Consultoria Riosoft\\2026\\VENDAS\\VIDEOS BRUTOS\\Vendas\\Cadastro\\Cadastros\\Aula 8 - Cadastro de Vendedor\\Cadastro de Vendedor_audio.wav"
+      output_dir:
+        description: "Pasta de destino da transcrição"
+        required: true
+        default: "G:\\Meu Drive\\Consultorias\\Consultoria Riosoft\\2026\\VENDAS\\VIDEOS BRUTOS\\Vendas\\Cadastro\\Cadastros\\Aula 8 - Cadastro de Vendedor\\transcricao_piloto"
+
+jobs:
+  transcrever:
+    runs-on: [self-hosted, educriacao, whisper]
+    steps:
+      - name: Preparar pastas temporarias
+        shell: powershell
+        run: |
+          $stage = Join-Path $env:TEMP "whisper_piloto_$env:GITHUB_RUN_ID"
+          $audios = Join-Path $stage "audios"
+          $trans  = Join-Path $stage "transcricoes"
+          $logs   = Join-Path $stage "logs"
+          New-Item -ItemType Directory -Force -Path $audios,$trans,$logs | Out-Null
+          "STAGE_DIR=$stage"  | Out-File -Append $env:GITHUB_ENV
+          "AUDIOS_DIR=$audios" | Out-File -Append $env:GITHUB_ENV
+          "TRANS_DIR=$trans"   | Out-File -Append $env:GITHUB_ENV
+          "LOGS_DIR=$logs"     | Out-File -Append $env:GITHUB_ENV
+          Write-Host "Stage: $stage"
+
+      - name: Copiar audio para stage
+        shell: powershell
+        run: |
+          $src = "${{ inputs.audio_path }}"
+          if (-not (Test-Path $src)) { throw "Audio nao encontrado: $src" }
+          $name = [System.IO.Path]::GetFileNameWithoutExtension($src)
+          $destDir = Join-Path $env:AUDIOS_DIR $name
+          New-Item -ItemType Directory -Force -Path $destDir | Out-Null
+          Copy-Item $src (Join-Path $destDir ([System.IO.Path]::GetFileName($src))) -Force
+          Write-Host "Copiado para: $destDir"
+
+      - name: Rodar transcricao (etapa 2)
+        shell: powershell
+        env:
+          WHISPER_AUDIOS_DIR: ${{ env.AUDIOS_DIR }}
+          WHISPER_TRANSCRICOES_DIR: ${{ env.TRANS_DIR }}
+          WHISPER_LOGS_DIR: ${{ env.LOGS_DIR }}
+        run: |
+          cd "G:\Meu Drive\whisper_pipeline"
+          & "C:\Users\Usuario\whisper_venv\Scripts\python.exe" "G:\Meu Drive\whisper_pipeline\02_transcrever.py"
+
+      - name: Publicar transcricao na pasta final
+        shell: powershell
+        run: |
+          $out = "${{ inputs.output_dir }}"
+          New-Item -ItemType Directory -Force -Path $out | Out-Null
+          Copy-Item (Join-Path $env:TRANS_DIR "*") $out -Recurse -Force
+          Write-Host "Transcricao publicada em: $out"
+          Get-ChildItem $out -Recurse | Select-Object FullName, Length
+
+      - name: Limpar stage
+        if: always()
+        shell: powershell
+        run: |
+          if ($env:STAGE_DIR -and (Test-Path $env:STAGE_DIR)) {
+            Remove-Item $env:STAGE_DIR -Recurse -Force -ErrorAction SilentlyContinue
+            Write-Host "Stage limpo"
+          }
