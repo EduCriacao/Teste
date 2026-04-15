@@ -1,0 +1,58 @@
+name: Poll Transcricoes Airtable
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+env:
+  AIRTABLE_BASE: appfs32XCjx37P7xs
+  AIRTABLE_TABLE: tbllXzQyA6v8YqEeR
+
+jobs:
+  poll:
+    runs-on: ubuntu-latest
+    outputs:
+      pending: ${{ steps.query.outputs.pending }}
+    steps:
+      - name: Query Airtable para registros Pendente
+        id: query
+        env:
+          AIRTABLE_PAT: ${{ secrets.AIRTABLE_PAT }}
+        run: |
+          set -e
+          URL="https://api.airtable.com/v0/${AIRTABLE_BASE}/${AIRTABLE_TABLE}?filterByFormula=%7BStatus%7D%3D%22Pendente%22&maxRecords=10"
+          RESP=$(curl -sS -H "Authorization: Bearer ${AIRTABLE_PAT}" "$URL")
+          PENDING=$(echo "$RESP" | jq -c '[.records[] | {id:.id, audio:.fields["Audio Path"], out:.fields["Output Dir"]}]')
+          COUNT=$(echo "$PENDING" | jq 'length')
+          echo "Encontrados $COUNT pendentes"
+          echo "pending=$PENDING" >> "$GITHUB_OUTPUT"
+
+  trigger:
+    needs: poll
+    if: needs.poll.outputs.pending != '[]' && needs.poll.outputs.pending != ''
+    runs-on: ubuntu-latest
+    strategy:
+      max-parallel: 1
+      matrix:
+        record: ${{ fromJson(needs.poll.outputs.pending) }}
+    steps:
+      - name: Marcar como Rodando no Airtable
+        env:
+          AIRTABLE_PAT: ${{ secrets.AIRTABLE_PAT }}
+        run: |
+          curl -sS -X PATCH \
+            -H "Authorization: Bearer ${AIRTABLE_PAT}" \
+            -H "Content-Type: application/json" \
+            "https://api.airtable.com/v0/${AIRTABLE_BASE}/${AIRTABLE_TABLE}/${{ matrix.record.id }}" \
+            -d '{"fields":{"Status":{"name":"Rodando"},"Iniciado em":"'"$(date -u +%Y-%m-%dT%H:%M:%S.000Z)"'"}}'
+
+      - name: Disparar workflow de transcricao
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          curl -sS -X POST \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ github.repository }}/dispatches" \
+            -d '{"event_type":"transcrever","client_payload":{"record_id":"${{ matrix.record.id }}","audio_path":${{ toJson(matrix.record.audio) }},"output_dir":${{ toJson(matrix.record.out) }}}}'
