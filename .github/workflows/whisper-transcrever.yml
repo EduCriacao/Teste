@@ -4,13 +4,26 @@ on:
   workflow_dispatch:
     inputs:
       audio_path:
-        description: "Caminho absoluto do .wav (G:\\...)"
+        description: "Caminho absoluto do .wav"
         required: true
         default: "G:\\Meu Drive\\Consultorias\\Consultoria Riosoft\\2026\\VENDAS\\VIDEOS BRUTOS\\Vendas\\Cadastro\\Cadastros\\Aula 8 - Cadastro de Vendedor\\Cadastro de Vendedor_audio.wav"
       output_dir:
-        description: "Pasta de destino da transcrição"
+        description: "Pasta de destino"
         required: true
         default: "G:\\Meu Drive\\Consultorias\\Consultoria Riosoft\\2026\\VENDAS\\VIDEOS BRUTOS\\Vendas\\Cadastro\\Cadastros\\Aula 8 - Cadastro de Vendedor\\transcricao_piloto"
+      record_id:
+        description: "(Opcional) recordId do Airtable"
+        required: false
+        default: ""
+  repository_dispatch:
+    types: [transcrever]
+
+env:
+  AUDIO_PATH:  ${{ github.event.client_payload.audio_path || inputs.audio_path }}
+  OUTPUT_DIR:  ${{ github.event.client_payload.output_dir || inputs.output_dir }}
+  RECORD_ID:   ${{ github.event.client_payload.record_id || inputs.record_id }}
+  AIRTABLE_BASE: appfs32XCjx37P7xs
+  AIRTABLE_TABLE: tbllXzQyA6v8YqEeR
 
 jobs:
   transcrever:
@@ -24,22 +37,20 @@ jobs:
           $trans  = Join-Path $stage "transcricoes"
           $logs   = Join-Path $stage "logs"
           New-Item -ItemType Directory -Force -Path $audios,$trans,$logs | Out-Null
-          "STAGE_DIR=$stage"  | Out-File -Append $env:GITHUB_ENV
+          "STAGE_DIR=$stage"   | Out-File -Append $env:GITHUB_ENV
           "AUDIOS_DIR=$audios" | Out-File -Append $env:GITHUB_ENV
           "TRANS_DIR=$trans"   | Out-File -Append $env:GITHUB_ENV
           "LOGS_DIR=$logs"     | Out-File -Append $env:GITHUB_ENV
-          Write-Host "Stage: $stage"
 
       - name: Copiar audio para stage
         shell: powershell
         run: |
-          $src = "${{ inputs.audio_path }}"
+          $src = $env:AUDIO_PATH
           if (-not (Test-Path $src)) { throw "Audio nao encontrado: $src" }
           $name = [System.IO.Path]::GetFileNameWithoutExtension($src)
           $destDir = Join-Path $env:AUDIOS_DIR $name
           New-Item -ItemType Directory -Force -Path $destDir | Out-Null
           Copy-Item $src (Join-Path $destDir ([System.IO.Path]::GetFileName($src))) -Force
-          Write-Host "Copiado para: $destDir"
 
       - name: Rodar transcricao (etapa 2)
         shell: cmd
@@ -55,11 +66,49 @@ jobs:
       - name: Publicar transcricao na pasta final
         shell: powershell
         run: |
-          $out = "${{ inputs.output_dir }}"
+          $out = $env:OUTPUT_DIR
           New-Item -ItemType Directory -Force -Path $out | Out-Null
           Copy-Item (Join-Path $env:TRANS_DIR "*") $out -Recurse -Force
-          Write-Host "Transcricao publicada em: $out"
-          Get-ChildItem $out -Recurse | Select-Object FullName, Length
+          $files = (Get-ChildItem $out -Recurse -File | ForEach-Object { $_.FullName }) -join "`n"
+          "PUBLISHED_FILES<<EOF"  | Out-File -Append $env:GITHUB_ENV
+          $files                   | Out-File -Append $env:GITHUB_ENV
+          "EOF"                    | Out-File -Append $env:GITHUB_ENV
+
+      - name: Atualizar Airtable (sucesso)
+        if: success() && env.RECORD_ID != ''
+        shell: powershell
+        env:
+          AIRTABLE_PAT: ${{ secrets.AIRTABLE_PAT }}
+        run: |
+          $runUrl = "https://github.com/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
+          $body = @{
+            fields = @{
+              "Status"        = @{ name = "Concluído" }
+              "Concluído em"  = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ss.fffZ")
+              "Run URL"       = $runUrl
+              "Mensagem"      = "Arquivos gerados:`n$env:PUBLISHED_FILES"
+            }
+          } | ConvertTo-Json -Depth 6
+          $url = "https://api.airtable.com/v0/$env:AIRTABLE_BASE/$env:AIRTABLE_TABLE/$env:RECORD_ID"
+          Invoke-RestMethod -Uri $url -Method Patch -Headers @{ Authorization = "Bearer $env:AIRTABLE_PAT"; "Content-Type" = "application/json" } -Body $body
+
+      - name: Atualizar Airtable (erro)
+        if: failure() && env.RECORD_ID != ''
+        shell: powershell
+        env:
+          AIRTABLE_PAT: ${{ secrets.AIRTABLE_PAT }}
+        run: |
+          $runUrl = "https://github.com/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
+          $body = @{
+            fields = @{
+              "Status"        = @{ name = "Erro" }
+              "Concluído em"  = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ss.fffZ")
+              "Run URL"       = $runUrl
+              "Mensagem"      = "Falha no workflow. Ver logs: $runUrl"
+            }
+          } | ConvertTo-Json -Depth 6
+          $url = "https://api.airtable.com/v0/$env:AIRTABLE_BASE/$env:AIRTABLE_TABLE/$env:RECORD_ID"
+          Invoke-RestMethod -Uri $url -Method Patch -Headers @{ Authorization = "Bearer $env:AIRTABLE_PAT"; "Content-Type" = "application/json" } -Body $body
 
       - name: Limpar stage
         if: always()
@@ -67,5 +116,4 @@ jobs:
         run: |
           if ($env:STAGE_DIR -and (Test-Path $env:STAGE_DIR)) {
             Remove-Item $env:STAGE_DIR -Recurse -Force -ErrorAction SilentlyContinue
-            Write-Host "Stage limpo"
           }
