@@ -1,0 +1,19 @@
+name: Hello Runner
+
+on:
+  workflow_dispatch:
+
+jobs:
+  hello:
+    runs-on: [self-hosted, educriacao, whisper]
+    steps:
+      - name: Say hello
+        run: echo "hello from educriacao-local em $env:COMPUTERNAME as $env:USERNAME"
+      - name: Show working directory
+        run: pwd
+      - name: Show access to G drive
+        run: |
+          if (Test-Path "G:\Meu Drive") { "G:\Meu Drive OK" } else { "G:\Meu Drive NAO ACESSIVEL" }
+        shell: pwsh
+
+  
